@@ -215,7 +215,13 @@ class QuestionViewSet(viewsets.ModelViewSet):
 class TestResultViewSet(viewsets.ModelViewSet):
     serializer_class = TestResultSerializer
     permission_classes = [IsAuthenticated]
-    http_method_names = ["get", "delete", "patch", "head", "options"]
+    http_method_names = ["get", "post", "delete", "patch", "head", "options"]
+
+    def create(self, request, *args, **kwargs):
+        return Response(
+            {"detail": 'Method "POST" not allowed.'},
+            status=status.HTTP_405_METHOD_NOT_ALLOWED,
+        )
 
     def get_queryset(self):
         qs = TestResult.objects.select_related("participant", "module", "group").all()
