@@ -188,14 +188,16 @@ class TestResultSerializer(serializers.ModelSerializer):
 
 
 class ResultArchiveFolderSerializer(serializers.ModelSerializer):
-    resultIds = serializers.PrimaryKeyRelatedField(source="results", many=True, read_only=True)
     resultsCount = serializers.SerializerMethodField()
 
     class Meta:
         model = ResultArchiveFolder
-        fields = ["id", "name", "created_at", "resultIds", "resultsCount"]
+        fields = ["id", "name", "created_at", "resultsCount"]
 
     def get_resultsCount(self, obj):
+        total = getattr(obj, "results_total", None)
+        if total is not None:
+            return total
         return obj.results.count()
 
 

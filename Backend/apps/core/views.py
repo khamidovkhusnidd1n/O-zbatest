@@ -1,10 +1,11 @@
 from io import BytesIO
 
 from django.db import connection
+from django.db.models import Count
 from django.utils import timezone
 from datetime import timedelta
 from rest_framework import parsers, status, viewsets
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from openpyxl import load_workbook
@@ -224,13 +225,42 @@ class TestResultViewSet(viewsets.ModelViewSet):
         return qs.filter(participant=user)
 
     def get_permissions(self):
-        if self.action in {"destroy", "partial_update"}:
+        if self.action in {"destroy", "partial_update", "bulk_restart"}:
             return [IsAdminOnly()]
         return [permission() for permission in self.permission_classes]
 
+    @action(detail=False, methods=["post"], url_path="bulk-restart")
+    def bulk_restart(self, request):
+        """Tanlangan tinglovchilarga bir so'rovda qayta topshirishga ruxsat berish.
+
+        Body: {"participantIds": [..], "groupId": <id|null>, "onlyFailed": true}
+        Natijalar o'chiriladi (yagona DELETE so'rovi bilan).
+        """
+        participant_ids = request.data.get("participantIds") or []
+        if not isinstance(participant_ids, list) or not participant_ids:
+            return Response(
+                {"detail": "Tinglovchilar ro'yxati bo'sh."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        group_id = request.data.get("groupId")
+        only_failed = request.data.get("onlyFailed", True)
+
+        qs = TestResult.objects.filter(participant_id__in=participant_ids)
+        if group_id:
+            qs = qs.filter(group_id=group_id)
+            module_ids = list(
+                Module.objects.filter(groups__id=group_id).values_list("id", flat=True)
+            )
+            if module_ids:
+                qs = qs.filter(module_id__in=module_ids)
+        if only_failed:
+            qs = qs.filter(is_passed=False)
+        deleted, _ = qs.delete()
+        return Response({"deleted": deleted}, status=status.HTTP_200_OK)
+
 
 class ResultArchiveFolderViewSet(viewsets.ModelViewSet):
-    queryset = ResultArchiveFolder.objects.prefetch_related("results").all().order_by("-created_at", "-id")
+    queryset = ResultArchiveFolder.objects.annotate(results_total=Count("results")).order_by("-created_at", "-id")
     serializer_class = ResultArchiveFolderSerializer
     permission_classes = [IsAdminOnly]
     http_method_names = ["get", "post", "patch", "delete", "head", "options"]
@@ -282,7 +312,7 @@ def _build_snapshot_payload(user):
         results = TestResult.objects.none()
         archived_results = TestResult.objects.none()
         demo_results = TestResult.objects.none()
-        result_archive_folders = ResultArchiveFolder.objects.prefetch_related("results").all().order_by("-created_at", "-id")
+        result_archive_folders = ResultArchiveFolder.objects.annotate(results_total=Count("results")).order_by("-created_at", "-id")
     else:
         group_id = user.group_id
         users = User.objects.filter(id=user.id)

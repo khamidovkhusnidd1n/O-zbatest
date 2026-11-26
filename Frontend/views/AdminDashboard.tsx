@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router-dom';
 import { SiteSettings, User, Group, Subject, Module, Question, UserRole, TestResult, ResultArchiveFolder } from '../types';
 import {
   bulkDeleteUsers,
+  bulkRestartResults,
   createResultArchiveFolder,
   createGroup,
   createModule,
@@ -92,6 +93,16 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ data: rawData, reloadDa
         } catch (e) { console.error('Lazy results error:', e); }
         setLazyLoading(false);
       }
+      // Guruh a'zolari (restart holati) uchun faqat faol natijalar kerak
+      if (activeTab === 'groups' && !loadedTabs['results'] && !loadedTabs['group-results']) {
+        setLazyLoading(true);
+        try {
+          const r = await getLazyResults(false, false);
+          setLazyResults(r || []);
+          setLoadedTabs(prev => ({ ...prev, 'group-results': true }));
+        } catch (e) { console.error('Lazy group results error:', e); }
+        setLazyLoading(false);
+      }
       // Monitoring tabi ham natijalar kerak
       if (activeTab === 'monitoring' && !loadedTabs['results']) {
         setLazyLoading(true);
@@ -108,7 +119,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ data: rawData, reloadDa
       }
     };
     loadTabData();
-  }, [activeTab, isDemoTab]);
+  }, [activeTab, isDemoTab, loadedTabs]);
 
   // Lazy yuklangan ma'lumotlarni data ob'ektiga birlashtirish
   const enrichedData = useMemo(() => ({
@@ -151,6 +162,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ data: rawData, reloadDa
   // States
   const [selectedUserIds, setSelectedUserIds] = useState<string[]>([]);
   const [selectedTableUserIds, setSelectedTableUserIds] = useState<Array<string | number>>([]);
+  const [selectedRestartUserIds, setSelectedRestartUserIds] = useState<Array<string | number>>([]);
   const [userSearchTerm, setUserSearchTerm] = useState('');
   const [subjectSearchTerm, setSubjectSearchTerm] = useState('');
   const [questionSearchTerm, setQuestionSearchTerm] = useState('');
@@ -625,35 +637,60 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ data: rawData, reloadDa
     setIsAddUsersToGroupModalOpen(false);
   };
 
-  const getGroupUserStatus = (userId: string, groupId: string) => {
-    const group = (data.groups || []).find((g: Group) => String(g.id) === String(groupId));
-    const groupModuleIds = group?.moduleIds || [];
-    const userResults = (data.results || []).filter((result: TestResult) => {
-      const inGroup = String(result.groupId) === String(groupId);
-      const byUser = String(result.participantId) === String(userId);
-      const inModuleScope = groupModuleIds.length === 0 || groupModuleIds.includes(result.moduleId);
-      return inGroup && byUser && inModuleScope;
-    });
+  // Tanlangan guruh a'zolarining holati — bir marta hisoblanadi (O(natijalar + a'zolar))
+  const groupUserStatusMap = useMemo(() => {
+    const map = new Map<string, { label: string; tone: string; canRestart: boolean }>();
+    if (!selectedGroupId) return map;
+    const group = (data.groups || []).find((g: Group) => String(g.id) === String(selectedGroupId));
+    const groupModuleIds = (group?.moduleIds || []).map((id: any) => String(id));
+    const passedByUser = new Map<string, boolean>();
+    for (const result of (data.results || []) as TestResult[]) {
+      if (String(result.groupId) !== String(selectedGroupId)) continue;
+      if (groupModuleIds.length > 0 && !groupModuleIds.includes(String(result.moduleId))) continue;
+      const key = String(result.participantId);
+      passedByUser.set(key, (passedByUser.get(key) || false) || !!result.isPassed);
+    }
+    for (const u of (data.users || []) as User[]) {
+      if (String(u.groupId) !== String(selectedGroupId)) continue;
+      const key = String(u.id);
+      if (!passedByUser.has(key)) {
+        map.set(key, { label: "Qatnashmagan", tone: "bg-slate-100 text-slate-700", canRestart: false });
+      } else if (passedByUser.get(key)) {
+        map.set(key, { label: "Muvaffaqiyatli topshirgan", tone: "bg-emerald-100 text-emerald-700", canRestart: false });
+      } else {
+        map.set(key, { label: "Yiqilgan", tone: "bg-rose-100 text-rose-700", canRestart: true });
+      }
+    }
+    return map;
+  }, [data.results, data.users, data.groups, selectedGroupId]);
 
-    if (userResults.length === 0) return { label: "Qatnashmagan", tone: "bg-slate-100 text-slate-700", canRestart: false };
-    const hasPassed = userResults.some((result: TestResult) => result.isPassed);
-    if (hasPassed) return { label: "Muvaffaqiyatli topshirgan", tone: "bg-emerald-100 text-emerald-700", canRestart: false };
-    return { label: "Yiqilgan", tone: "bg-rose-100 text-rose-700", canRestart: true };
-  };
+  const groupMembers = useMemo(
+    () => (data.users || []).filter((u: any) => String(u.groupId) === String(selectedGroupId)),
+    [data.users, selectedGroupId]
+  );
+  const groupRestartableIds = useMemo(
+    () => groupMembers.filter((u: any) => groupUserStatusMap.get(String(u.id))?.canRestart).map((u: any) => u.id),
+    [groupMembers, groupUserStatusMap]
+  );
+
+  const getGroupUserStatus = (userId: string | number) =>
+    groupUserStatusMap.get(String(userId)) || { label: "Qatnashmagan", tone: "bg-slate-100 text-slate-700", canRestart: false };
 
   const handleAllowRestart = async (userId: string, groupId: string) => {
-    const group = (data.groups || []).find((g: Group) => String(g.id) === String(groupId));
-    const groupModuleIds = group?.moduleIds || [];
-    const targetResults = (data.results || []).filter((result: TestResult) => {
-      const isTargetUser = String(result.participantId) === String(userId);
-      const isTargetGroup = String(result.groupId) === String(groupId);
-      const inModuleScope = groupModuleIds.length === 0 || groupModuleIds.includes(result.moduleId);
-      return isTargetUser && isTargetGroup && inModuleScope && !result.isPassed;
-    });
     await runAdminMutation(
-      () => Promise.all(targetResults.map((result: TestResult) => deleteResult(result.id))),
+      () => bulkRestartResults({ participantIds: [userId], groupId, onlyFailed: true }),
       "Qayta topshirish uchun ruxsat berildi."
     );
+  };
+
+  const handleBulkAllowRestart = async (participantIds: Array<string | number>) => {
+    if (!selectedGroupId || participantIds.length === 0) return;
+    if (!confirm(`${participantIds.length} ta tinglovchiga qayta topshirishga ruxsat berilsinmi?`)) return;
+    await runAdminMutation(
+      () => bulkRestartResults({ participantIds, groupId: selectedGroupId, onlyFailed: true }),
+      `${participantIds.length} ta tinglovchiga qayta topshirish uchun ruxsat berildi.`
+    );
+    setSelectedRestartUserIds([]);
   };
 
   const handleResultRestart = async (participantId: string, moduleId: string) => {
@@ -1340,12 +1377,40 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ data: rawData, reloadDa
         <div className="bg-white rounded-[2.5rem] shadow-xl p-10 border border-gray-100 animate-in zoom-in-95">
           <div className="flex justify-between items-center mb-10">
             <div><button onClick={() => setSelectedGroupId(null)} className="text-indigo-600 font-black text-xs uppercase tracking-widest flex items-center gap-2 mb-2 hover:translate-x-[-4px] transition-transform"><ChevronRight className="w-4 h-4 rotate-180" /> Orqaga</button><h3 className="text-3xl font-black text-gray-900">{(data.groups || []).find((g:any)=>String(g.id) === String(selectedGroupId))?.name} a'zolari</h3></div>
-            <button onClick={() => { setSelectedUserIds([]); setUserSearchTerm(''); setIsAddUsersToGroupModalOpen(true); }} className="bg-indigo-600 text-white px-8 py-4 rounded-2xl flex items-center gap-2 font-bold shadow-lg shadow-indigo-100"><UserPlus className="w-6 h-6" /> Tinglovchi Biriktirish</button>
+            <div className="flex flex-wrap items-center gap-3">
+              {groupRestartableIds.length > 0 && (
+                <button
+                  onClick={() => handleBulkAllowRestart(groupRestartableIds)}
+                  className="bg-amber-500 hover:bg-amber-600 text-white px-6 py-4 rounded-2xl flex items-center gap-2 font-bold shadow-lg shadow-amber-100 transition-colors"
+                  title="Yiqilgan barcha tinglovchilarga bir vaqtda ruxsat berish"
+                >
+                  <RotateCcw className="w-5 h-5" /> Yiqilganlarning hammasiga restart ({groupRestartableIds.length})
+                </button>
+              )}
+              {selectedRestartUserIds.length > 0 && (
+                <button
+                  onClick={() => handleBulkAllowRestart(selectedRestartUserIds)}
+                  className="bg-rose-600 hover:bg-rose-700 text-white px-6 py-4 rounded-2xl flex items-center gap-2 font-bold shadow-lg shadow-rose-100 transition-colors"
+                >
+                  <RotateCcw className="w-5 h-5" /> Tanlanganlarga restart ({selectedRestartUserIds.length})
+                </button>
+              )}
+              <button onClick={() => { setSelectedUserIds([]); setUserSearchTerm(''); setIsAddUsersToGroupModalOpen(true); }} className="bg-indigo-600 text-white px-8 py-4 rounded-2xl flex items-center gap-2 font-bold shadow-lg shadow-indigo-100"><UserPlus className="w-6 h-6" /> Tinglovchi Biriktirish</button>
+            </div>
           </div>
           <div className={tableWrapClass}>
             <table className={tableClass}>
               <thead>
                 <tr>
+                  <th className={`${thClass} w-12 text-center`}>
+                    <input
+                      type="checkbox"
+                      className="h-4 w-4 rounded border-slate-300 cursor-pointer"
+                      title="Restart mumkin bo'lganlarni belgilash"
+                      checked={groupRestartableIds.length > 0 && groupRestartableIds.every((id) => selectedRestartUserIds.includes(id))}
+                      onChange={(e) => setSelectedRestartUserIds(e.target.checked ? groupRestartableIds : [])}
+                    />
+                  </th>
                   <th className={thClass}>F.I.SH (Tinglovchi)</th>
                   <th className={thClass}>Login</th>
                   <th className={thClass}>Asosiy ish joyi</th>
@@ -1354,20 +1419,30 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ data: rawData, reloadDa
                 </tr>
               </thead>
               <tbody className="bg-white">
-                {(data.users || []).filter((u:any)=>String(u.groupId) === String(selectedGroupId)).map((u:any) => (
+                {groupMembers.map((u:any) => (
                   <tr key={u.id} className="hover:bg-slate-50 transition-colors">
+                    <td className={`${tdClass} text-center`}>
+                      {getGroupUserStatus(u.id).canRestart && (
+                        <input
+                          type="checkbox"
+                          className="h-4 w-4 rounded border-slate-300 cursor-pointer"
+                          checked={selectedRestartUserIds.includes(u.id)}
+                          onChange={(e) => setSelectedRestartUserIds((prev) => e.target.checked ? [...prev, u.id] : prev.filter((id) => id !== u.id))}
+                        />
+                      )}
+                    </td>
                     <td className={`${tdClass} font-bold text-slate-900`}>{u.fullName}</td>
                     <td className={`${tdClass} text-slate-600 font-medium`}>{u.username}</td>
                     <td className={`${tdClass} text-slate-600`}>{u.workplace || '—'}</td>
                     <td className={tdClass}>
                       {(() => {
-                        const status = getGroupUserStatus(u.id, selectedGroupId || '');
+                        const status = getGroupUserStatus(u.id);
                         return <span className={`px-3 py-1 rounded-lg text-[10px] uppercase font-black ${status.tone}`}>{status.label}</span>;
                       })()}
                     </td>
                     <td className={`${tdClass} text-right`}>
                       {(() => {
-                        const status = getGroupUserStatus(u.id, selectedGroupId || '');
+                        const status = getGroupUserStatus(u.id);
                         if (!status.canRestart) return null;
                         return (
                           <button
