@@ -274,7 +274,7 @@ export async function deleteUser(id: string | number) {
   return request(`/users/${id}/`, { method: 'DELETE' });
 }
 
-export async function bulkRestartResults(payload: { participantIds: (string | number)[]; groupId?: string | number | null; onlyFailed?: boolean }) {
+export async function bulkRestartResults(payload: { participantIds?: (string | number)[]; resultIds?: (string | number)[]; groupId?: string | number | null; onlyFailed?: boolean }) {
   return request('/results/bulk-restart/', {
     method: 'POST',
     body: JSON.stringify(payload),

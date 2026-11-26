@@ -441,8 +441,33 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ data: rawData, reloadDa
   }, [data.users, userSearchTerm, userFilters]);
 
   const filteredResults = useMemo(() => {
-    return isDemoTab ? (data.demoResults || []) : (data.results || []);
-  }, [data.results, data.demoResults, isDemoTab]);
+    const base = isDemoTab ? (data.demoResults || []) : (data.results || []);
+    if (isDemoTab) return base;
+    const { fullName, workplace, groupId, date, status } = resultFilters;
+    if (!fullName && !workplace && !groupId && !date && !status) return base;
+    const userMap = new Map<string, User>();
+    for (const u of (data.users || []) as User[]) userMap.set(String(u.id).trim(), u);
+    for (const u of archivedUsers) {
+      const k = String(u.id).trim();
+      if (!userMap.has(k)) userMap.set(k, u);
+    }
+    const fnLower = fullName.trim().toLowerCase();
+    const wpLower = workplace.trim().toLowerCase();
+    return base.filter((r: TestResult) => {
+      const u = userMap.get(String(r.participantId).trim());
+      if (fnLower && !(u?.fullName || '').toLowerCase().includes(fnLower)) return false;
+      if (wpLower && !(u?.workplace || '').toLowerCase().includes(wpLower)) return false;
+      if (groupId && String(u?.groupId || r.groupId || '') !== String(groupId)) return false;
+      if (date) {
+        const d = r.date ? new Date(r.date) : null;
+        const iso = d && !Number.isNaN(d.getTime()) ? d.toISOString().slice(0, 10) : '';
+        if (iso !== date) return false;
+      }
+      if (status === 'passed' && !r.isPassed) return false;
+      if (status === 'failed' && r.isPassed) return false;
+      return true;
+    });
+  }, [data.results, data.demoResults, data.users, archivedUsers, isDemoTab, resultFilters]);
 
   const [userPage, setUserPage] = useState(1);
   const paginatedUsers = useMemo(() => filteredUsers.slice((userPage - 1) * ITEMS_PER_PAGE, userPage * ITEMS_PER_PAGE), [filteredUsers, userPage]);
@@ -691,6 +716,19 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ data: rawData, reloadDa
       `${participantIds.length} ta tinglovchiga qayta topshirish uchun ruxsat berildi.`
     );
     setSelectedRestartUserIds([]);
+  };
+
+  const handleBulkResultRestart = async (ids: Array<string | number>) => {
+    if (ids.length === 0) {
+      alert("Avval kamida bitta natijani tanlang.");
+      return;
+    }
+    if (!confirm(`${ids.length} ta natija egasiga qayta topshirishga ruxsat berilsinmi?`)) return;
+    await runAdminMutation(
+      () => bulkRestartResults({ resultIds: ids }),
+      `${ids.length} ta natija bo'yicha qayta topshirish uchun ruxsat berildi.`
+    );
+    setSelectedResultIds([]);
   };
 
   const handleResultRestart = async (participantId: string, moduleId: string) => {
@@ -1013,6 +1051,24 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ data: rawData, reloadDa
                 >
                   <Archive className="w-5 h-5" /> Arxivlash
                 </button>
+                {selectedResultIds.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => handleBulkResultRestart(selectedResultIds)}
+                    className="bg-rose-600 text-white px-6 py-3 rounded-2xl flex items-center gap-2 font-bold shadow-lg shadow-rose-100 hover:bg-rose-700 transition-all"
+                  >
+                    <RotateCcw className="w-5 h-5" /> Tanlanganlarga restart ({selectedResultIds.length})
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => handleBulkResultRestart(filteredResults.map((r: TestResult) => r.id))}
+                  disabled={filteredResults.length === 0}
+                  className="bg-amber-500 text-white px-6 py-3 rounded-2xl flex items-center gap-2 font-bold shadow-lg shadow-amber-100 hover:bg-amber-600 transition-all disabled:opacity-50"
+                  title="Barcha ko'rinayotgan natijalar egalariga bir vaqtda restart berish"
+                >
+                  <RotateCcw className="w-5 h-5" /> Hammasiga restart ({filteredResults.length})
+                </button>
                 <button 
                   onClick={handleExportResults}
                   className="bg-green-600 text-white px-6 py-3 rounded-2xl flex items-center gap-2 font-bold shadow-lg shadow-green-100 hover:bg-green-700 transition-all"
@@ -1070,7 +1126,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ data: rawData, reloadDa
                       <input
                         type="checkbox"
                         checked={filteredResults.length > 0 && selectedResultIds.length === filteredResults.length}
-                        onChange={(e) => setSelectedResultIds(e.target.checked ? paginatedResults.map((r: TestResult) => r.id) : [])}
+                        onChange={(e) => setSelectedResultIds(e.target.checked ? filteredResults.map((r: TestResult) => r.id) : [])}
                         className="h-4 w-4 rounded border-slate-300"
                       />
                     </th>

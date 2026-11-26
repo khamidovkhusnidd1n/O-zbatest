@@ -236,6 +236,26 @@ class TestResultViewSet(viewsets.ModelViewSet):
         Body: {"participantIds": [..], "groupId": <id|null>, "onlyFailed": true}
         Natijalar o'chiriladi (yagona DELETE so'rovi bilan).
         """
+        result_ids = request.data.get("resultIds")
+        if result_ids:
+            if not isinstance(result_ids, list):
+                return Response(
+                    {"detail": "Natijalar ro'yxati noto'g'ri."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            from django.db.models import Q
+
+            pairs = set(
+                TestResult.objects.filter(id__in=result_ids).values_list("participant_id", "module_id")
+            )
+            if not pairs:
+                return Response({"deleted": 0}, status=status.HTTP_200_OK)
+            condition = Q()
+            for participant_id, module_id in pairs:
+                condition |= Q(participant_id=participant_id, module_id=module_id)
+            deleted, _ = TestResult.objects.filter(condition).delete()
+            return Response({"deleted": deleted, "participants": len({p for p, _ in pairs})})
+
         participant_ids = request.data.get("participantIds") or []
         if not isinstance(participant_ids, list) or not participant_ids:
             return Response(
