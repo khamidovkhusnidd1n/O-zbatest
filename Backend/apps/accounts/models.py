@@ -50,6 +50,12 @@ class User(AbstractUser):
         blank=True,
         verbose_name="Majburiy imtihon bali"
     )
+    plain_password = models.CharField(
+        max_length=128,
+        blank=True,
+        default="",
+        verbose_name="Ko'rinadigan parol"
+    )
 
     def __str__(self):
         return f"{self.username} ({self.role})"

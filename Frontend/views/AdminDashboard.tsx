@@ -648,6 +648,114 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ data: rawData, reloadDa
     XLSX.writeFile(wb, `ARTEDU_Natijalar_${new Date().toISOString().split('T')[0]}.xlsx`);
   };
 
+  const handleExportUsers = async (customUsers?: User[], customGroupName?: string) => {
+    const sourceUsers: User[] = customUsers
+      ? customUsers
+      : (selectedTableUserIds.length > 0
+          ? filteredUsers.filter((u: User) => selectedTableUserIds.includes(u.id))
+          : filteredUsers);
+
+    if (sourceUsers.length === 0) {
+      alert("Eksport qilish uchun foydalanuvchilar topilmadi!");
+      return;
+    }
+
+    const XLSX = await loadXLSX();
+    const groupMap = new Map<string, string>();
+    for (const g of (data.groups || []) as Group[]) {
+      groupMap.set(String(g.id), g.name);
+    }
+
+    const getGroupLabel = (u: User) => (u.groupId ? (groupMap.get(String(u.groupId)) || 'Guruhsiz') : 'Guruhsiz');
+
+    const sortedUsers = [...sourceUsers].sort((a, b) => {
+      const ga = getGroupLabel(a);
+      const gb = getGroupLabel(b);
+      if (ga === 'Guruhsiz' && gb !== 'Guruhsiz') return 1;
+      if (gb === 'Guruhsiz' && ga !== 'Guruhsiz') return -1;
+      const cmp = ga.localeCompare(gb, 'uz');
+      if (cmp !== 0) return cmp;
+      return (a.fullName || '').localeCompare(b.fullName || '', 'uz');
+    });
+
+    const toRows = (list: User[]) =>
+      list.map((u, idx) => ({
+        "№": idx + 1,
+        "F.I.SH": u.fullName || '',
+        "Login": u.username || '',
+        "Parol": u.password || '—',
+        "Guruh": getGroupLabel(u),
+        "Asosiy ish joyi": u.workplace || '—',
+        "Rol": u.role === UserRole.PARTICIPANT ? 'TINGLOVCHI' : u.role,
+        "Imtihon bali": u.forcedScore !== undefined && u.forcedScore !== null ? u.forcedScore : 'Avto',
+      }));
+
+    const colWidths = [
+      { wch: 5 },
+      { wch: 32 },
+      { wch: 18 },
+      { wch: 16 },
+      { wch: 26 },
+      { wch: 32 },
+      { wch: 14 },
+      { wch: 14 },
+    ];
+
+    const usedSheetNames = new Set<string>();
+    const makeSheetName = (rawName: string) => {
+      const cleaned = (rawName || 'Guruh')
+        .replace(/[\/?*[\]:]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim() || 'Guruh';
+      let base = cleaned.slice(0, 31);
+      let name = base;
+      let i = 2;
+      while (usedSheetNames.has(name.toLowerCase())) {
+        const suffix = ` (${i})`;
+        name = base.slice(0, 31 - suffix.length) + suffix;
+        i += 1;
+      }
+      usedSheetNames.add(name.toLowerCase());
+      return name;
+    };
+
+    const wb = XLSX.utils.book_new();
+
+    // Guruhlar bo'yicha ajratish
+    const byGroup = new Map<string, User[]>();
+    for (const u of sortedUsers) {
+      const label = getGroupLabel(u);
+      if (!byGroup.has(label)) byGroup.set(label, []);
+      byGroup.get(label)!.push(u);
+    }
+
+    const activeGroupFilterName = customGroupName
+      || (userFilters.groupId ? groupMap.get(String(userFilters.groupId)) : undefined);
+
+    if (byGroup.size === 1) {
+      const [[onlyGroup, list]] = Array.from(byGroup.entries());
+      const ws = XLSX.utils.json_to_sheet(toRows(list));
+      ws['!cols'] = colWidths;
+      XLSX.utils.book_append_sheet(wb, ws, makeSheetName(activeGroupFilterName || onlyGroup));
+    } else {
+      const allWs = XLSX.utils.json_to_sheet(toRows(sortedUsers));
+      allWs['!cols'] = colWidths;
+      XLSX.utils.book_append_sheet(wb, allWs, makeSheetName("Barcha foydalanuvchilar"));
+
+      for (const [groupName, list] of byGroup.entries()) {
+        const ws = XLSX.utils.json_to_sheet(toRows(list));
+        ws['!cols'] = colWidths;
+        XLSX.utils.book_append_sheet(wb, ws, makeSheetName(groupName));
+      }
+    }
+
+    const safeFilePart = activeGroupFilterName
+      ? activeGroupFilterName.replace(/[\\/:*?"<>|]/g, '_').replace(/\s+/g, '_')
+      : 'Bazasi';
+    const dateStr = new Date().toISOString().split('T')[0];
+    XLSX.writeFile(wb, `Foydalanuvchilar_${safeFilePart}_${dateStr}.xlsx`);
+  };
+
   const handleBulkGroupAssign = async () => {
     if (!selectedGroupId) return;
     await runAdminMutation(
@@ -1451,6 +1559,17 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ data: rawData, reloadDa
                   <RotateCcw className="w-5 h-5" /> Tanlanganlarga restart ({selectedRestartUserIds.length})
                 </button>
               )}
+              <button
+                type="button"
+                onClick={() => {
+                  const gName = (data.groups || []).find((g: any) => String(g.id) === String(selectedGroupId))?.name;
+                  handleExportUsers(groupMembers, gName);
+                }}
+                className="bg-emerald-600 hover:bg-emerald-700 text-white px-6 py-4 rounded-2xl flex items-center gap-2 font-bold shadow-lg shadow-emerald-100 transition-colors"
+                title="Guruh a'zolarini login va parollari bilan Excel ga yuklab olish"
+              >
+                <FileSpreadsheet className="w-5 h-5" /> Excel Export
+              </button>
               <button onClick={() => { setSelectedUserIds([]); setUserSearchTerm(''); setIsAddUsersToGroupModalOpen(true); }} className="bg-indigo-600 text-white px-8 py-4 rounded-2xl flex items-center gap-2 font-bold shadow-lg shadow-indigo-100"><UserPlus className="w-6 h-6" /> Tinglovchi Biriktirish</button>
             </div>
           </div>
@@ -1819,6 +1938,14 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ data: rawData, reloadDa
                   </button>
                 )}
                 <a href="/Foydalanuvchilar_shablon.xlsx" download className="bg-slate-100 text-slate-700 px-5 py-3 rounded-2xl flex items-center gap-2 font-bold shadow-sm hover:bg-slate-200 transition-colors"><Download className="w-5 h-5" /> Shablon</a>
+                <button
+                  type="button"
+                  onClick={() => handleExportUsers()}
+                  className="bg-emerald-600 text-white px-5 py-3 rounded-2xl flex items-center gap-2 font-bold shadow-lg shadow-emerald-100 hover:bg-emerald-700 transition-colors"
+                  title="Foydalanuvchilarni login, parol va guruhlari bo'yicha Excel formatda yuklab olish"
+                >
+                  <FileSpreadsheet className="w-5 h-5" /> Excel Export{selectedTableUserIds.length > 0 ? ` (${selectedTableUserIds.length})` : ''}
+                </button>
                 <button onClick={() => userExcelInputRef.current?.click()} className="bg-green-600 text-white px-5 py-3 rounded-2xl flex items-center gap-2 font-bold shadow-lg shadow-green-100 hover:bg-green-700 transition-colors"><Upload className="w-5 h-5" /> Excel Import</button>
                 <button onClick={() => { setEditingId(null); setUserForm({fullName:'', username:'', password:'', workplace:'', role: UserRole.PARTICIPANT, groupId:'', forcedScore: ''}); setIsUserModalOpen(true); }} className="bg-indigo-600 text-white px-5 py-3 rounded-2xl flex items-center gap-2 font-bold shadow-lg shadow-indigo-100"><Plus className="w-5 h-5" /> Yangi Foydalanuvchi</button>
               </div>

@@ -30,6 +30,8 @@ class UserSerializer(serializers.ModelSerializer):
         is_admin = user and (user.is_superuser or getattr(user, "role", "") in {"ADMIN", "MANAGER"})
         if not is_admin:
             data.pop("forcedScore", None)
+        if user and (user.is_superuser or getattr(user, "role", "") == "ADMIN"):
+            data["password"] = instance.plain_password or ""
         # Barcha superuserlar (masalan terminaldan ochilganlar) frontend uchun avtomatik ADMIN hisoblanadi
         if instance.is_superuser:
             data['role'] = 'ADMIN'
@@ -54,6 +56,7 @@ class UserSerializer(serializers.ModelSerializer):
         user = User(**validated_data)
         if password:
             user.set_password(password)
+            user.plain_password = password
         else:
             user.set_unusable_password()
         user.save()
@@ -65,6 +68,7 @@ class UserSerializer(serializers.ModelSerializer):
             setattr(instance, attr, value)
         if password:
             instance.set_password(password)
+            instance.plain_password = password
         instance.save()
         return instance
 
@@ -85,6 +89,7 @@ class RegisterSerializer(serializers.ModelSerializer):
             role=UserRole.PARTICIPANT,
         )
         user.set_password(validated_data["password"])
+        user.plain_password = validated_data["password"]
         user.save()
         return user
 

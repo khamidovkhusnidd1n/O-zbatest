@@ -717,6 +717,7 @@ def import_users_view(request):
                 user.forced_score = forced_score_val
             if password:
                 user.set_password(password)
+                user.plain_password = password
             user.save()
             updated += 1
             continue
@@ -729,6 +730,7 @@ def import_users_view(request):
         User.objects.create_user(
             username=username,
             password=password,
+            plain_password=password,
             full_name=full_name,
             workplace=workplace,
             role=normalized_role,
